@@ -6,8 +6,12 @@ import unicodedata
 from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
+from repodelta.providers.capabilities import ProviderCapability
+
 if TYPE_CHECKING:
     from repodelta.changes.hunks import DiffHunkCollection
+    from repodelta.providers.evidence import EvidenceContribution
+    from repodelta.providers.planning import ProviderPlan
     from repodelta.providers.structural import StructuralGraphCollection
 
 DiagnosticSeverity = Literal["info", "warning", "error"]
@@ -147,6 +151,7 @@ FactAuthority = Literal[
     "structural_provider",
     "verification_provider",
     "closure_scan_provider",
+    "evidence_provider",
     "supplied",
 ]
 RevisionSide = Literal["head", "base", "review", "unchanged"]
@@ -232,6 +237,13 @@ StructuralCoverageState = Literal[
     "stale",
     "invalid",
     "error",
+]
+EvidenceProviderCoverageState = Literal[
+    "complete",
+    "partial",
+    "unavailable",
+    "not_applicable",
+    "not_requested",
 ]
 ClosureScanSurface = Literal["paths", "file_content", "symbol_names"]
 ClosureScanState = Literal["complete", "partial", "unavailable"]
@@ -1954,6 +1966,7 @@ class EvidenceItem:
     classification: EvidenceClassification
     profile: FactProfile = "unknown"
     authority: FactAuthority = "supplied"
+    provider: str = ""
     revision_side: RevisionSide = "review"
     operation: ChangeOperation = "observed"
     role: FactRole = "changed_anchor"
@@ -1994,6 +2007,11 @@ class EvidenceItem:
         return None
 
     def validate_consistency(self) -> None:
+        if self.authority == "evidence_provider" and not self.provider:
+            raise ValueError(
+                f"{self.id}: evidence-provider authority requires the "
+                "concrete provider identity"
+            )
         if self.kind == "structural_relation_change":
             if (
                 self.role != "structural_relation"
@@ -2155,7 +2173,7 @@ class EvidenceCatalog:
     ] = ()
     diagnostics: tuple[Diagnostic, ...] = ()
     closure_scan_diagnostics: tuple[ClosureScanDiagnostic, ...] = ()
-    schema_version: str = "evidence_catalog.v18"
+    schema_version: str = "evidence_catalog.v19"
 
     def by_id(self) -> dict[str, EvidenceItem]:
         return {item.id: item for item in self.items}
@@ -3906,11 +3924,31 @@ class LLMShadowExecutionSummary:
 
 
 @dataclass(frozen=True)
+class EvidenceProviderCoverage:
+    """Review-wide coverage summary for one declared evidence provider.
+
+    States answer "where could this provider assert anything at all", never
+    whether the change is acceptable. `not_requested` records a planned
+    provider that was not executed for this review.
+    """
+
+    provider: str
+    state: EvidenceProviderCoverageState
+    requested_file_count: int = 0
+    examined_file_count: int = 0
+    fact_count: int = 0
+    limits: tuple[str, ...] = ()
+    capabilities: tuple[ProviderCapability, ...] = ()
+
+
+@dataclass(frozen=True)
 class ReviewOverview:
     pull_request_state: ReviewPullRequestState
     ci_state: ReviewCiState
     changed_file_count: int
     structural_coverage: StructuralCoverage
+    provider_coverage: tuple[EvidenceProviderCoverage, ...] = ()
+    unclaimed_changed_files: tuple[str, ...] = ()
     attention: tuple[ReviewAttention, ...] = ()
     empty_review_message: str | None = None
     llm_shadow: LLMShadowExecutionSummary = field(
@@ -3945,6 +3983,8 @@ class AnalysisInput:
     changes: DiffHunkCollection | None = None
     structural_graph: StructuralGraphCollection | None = None
     structural_graph_disabled: bool = False
+    provider_plan: ProviderPlan | None = None
+    provider_contributions: tuple[EvidenceContribution, ...] = ()
     supplied_evidence: tuple[SuppliedEvidence, ...] = ()
 
 
@@ -3980,7 +4020,7 @@ class ReviewBrief:
         structural_coverage=StructuralCoverage(state="unavailable"),
     )
     generated_by: str = "repodelta-open-core"
-    schema_version: str = "review_brief.v55"
+    schema_version: str = "review_brief.v56"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

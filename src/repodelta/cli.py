@@ -10,7 +10,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from repodelta.pipeline import DeterministicAnalyzer
-from repodelta.providers.codegraph import CodegraphProvider
+from repodelta.providers.codegraph import CodegraphProvider, codegraph_descriptor
+from repodelta.providers.planning import plan_providers
+from repodelta.providers.sql_schema import SqlSchemaProvider, sql_schema_descriptor
 from repodelta.closure.scanning import RepositoryClosureScanner
 from repodelta.model.contracts import AnalysisInput
 from repodelta.evaluation.core import (
@@ -39,7 +41,11 @@ from repodelta.providers.workspace import (
     isolated_review_roots,
     remote_review_roots,
 )
-from repodelta.presentation.status import format_structural_coverage
+from repodelta.presentation.status import (
+    format_provider_coverage,
+    format_structural_coverage,
+    format_unclaimed_files,
+)
 from repodelta.changes.hunks import parse_changed_files
 from repodelta.llm import (
     OpenAIShadowConfig,
@@ -431,10 +437,38 @@ def main() -> int:
             changes = analysis_input.changes or parse_changed_files(
                 analysis_input.packet.changed_files
             )
+            changed_paths = tuple(
+                sorted(
+                    {
+                        path
+                        for changed_file in analysis_input.packet.changed_files
+                        for path in (
+                            changed_file.base_path,
+                            changed_file.head_path,
+                        )
+                        if path
+                    }
+                )
+            )
+            provider_plan = plan_providers(
+                changed_paths,
+                (codegraph_descriptor(), sql_schema_descriptor()),
+            )
+            provider_contributions = ()
+            sql_entry = provider_plan.entry_for("sql_schema")
+            if sql_entry is not None:
+                provider_contributions = (
+                    SqlSchemaProvider().contribute(
+                        changes,
+                        matched_files=sql_entry.matched_files,
+                    ),
+                )
             analysis_input = replace(
                 analysis_input,
                 changes=changes,
                 structural_graph_disabled=args.no_structural_graph,
+                provider_plan=provider_plan,
+                provider_contributions=provider_contributions,
             )
             if not args.no_structural_graph:
                 structural_graph = map_packet_changed_symbols(
@@ -596,6 +630,13 @@ def main() -> int:
         format_structural_coverage(brief.overview.structural_coverage),
         file=sys.stderr,
     )
+    for provider_coverage in brief.overview.provider_coverage:
+        print(format_provider_coverage(provider_coverage), file=sys.stderr)
+    if brief.overview.unclaimed_changed_files:
+        print(
+            format_unclaimed_files(brief.overview.unclaimed_changed_files),
+            file=sys.stderr,
+        )
     print(f"LLM shadow: {brief.overview.llm_shadow.state}", file=sys.stderr)
     if args.verbose:
         for diagnostic in brief.overview.attention:

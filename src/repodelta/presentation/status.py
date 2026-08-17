@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from repodelta.model.contracts import StructuralCoverage
+from repodelta.model.contracts import EvidenceProviderCoverage, StructuralCoverage
 
 
 def format_structural_coverage(coverage: StructuralCoverage) -> str:
@@ -44,6 +44,50 @@ def format_structural_coverage(coverage: StructuralCoverage) -> str:
         ),
     }[coverage.state]
     return f"Structural mapping: skipped · {reason} · change-relation fallback used"
+
+
+def format_provider_coverage(coverage: EvidenceProviderCoverage) -> str:
+    """Format one provider's canonical coverage row without interpreting it."""
+
+    prefix = f"Evidence provider {coverage.provider}"
+    if coverage.state == "not_requested":
+        return (
+            f"{prefix}: not requested · "
+            f"{coverage.requested_file_count} matched files not examined"
+        )
+    if coverage.state == "not_applicable":
+        return f"{prefix}: not applicable"
+    if coverage.state == "unavailable":
+        return f"{prefix}: unavailable"
+    parts = [
+        f"{prefix}: {coverage.state}",
+        (
+            f"{coverage.examined_file_count}/{coverage.requested_file_count} "
+            "matched files examined"
+        ),
+        f"{coverage.fact_count} facts",
+    ]
+    if coverage.limits:
+        parts.append(
+            "limits: "
+            + ", ".join(item.replace("_", " ") for item in coverage.limits)
+        )
+    declared = ", ".join(
+        f"{item.name} {item.level}" for item in coverage.capabilities
+    )
+    if declared:
+        parts.append(f"declares {declared}")
+    return " · ".join(parts)
+
+
+def format_unclaimed_files(unclaimed: tuple[str, ...]) -> str:
+    """State where no declared provider can assert anything at all."""
+
+    return (
+        f"Evidence coverage gap: {len(unclaimed)} changed "
+        f"file{'s' if len(unclaimed) != 1 else ''} matched no declared "
+        "evidence provider"
+    )
 
 
 def _base_coverage(coverage: StructuralCoverage) -> str:

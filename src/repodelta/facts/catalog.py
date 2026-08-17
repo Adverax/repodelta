@@ -37,6 +37,7 @@ from repodelta.changes.hunks import (
 )
 from repodelta.facts.lexical import association_signature, merge_signatures
 from repodelta.facts.path_profile import fact_profile, path_classification
+from repodelta.providers.evidence import EvidenceContribution, ProviderFact
 from repodelta.providers.structural import (
     GraphSymbol,
     StructuralGraphCollection,
@@ -52,6 +53,7 @@ def build_evidence_catalog(
     *,
     supplied: tuple[SuppliedEvidence, ...] = (),
     closure_scan_results: ClosureScanResultSet = ClosureScanResultSet(),
+    contributions: tuple[EvidenceContribution, ...] = (),
 ) -> EvidenceCatalog:
     """Normalize source, structural, and supplied facts into one ID-addressed catalog."""
 
@@ -166,6 +168,14 @@ def build_evidence_catalog(
             ),
         )
 
+    contribution_diagnostics: list[Diagnostic] = []
+    for contribution in sorted(contributions, key=lambda item: item.provider):
+        contribution.validate_consistency()
+        contribution_diagnostics.extend(contribution.diagnostics)
+        for fact in contribution.facts:
+            _put(items, contributed_evidence(contribution.provider, fact))
+    contribution_diagnostics.extend(_contribution_conflicts(items))
+
     catalog = EvidenceCatalog(
         items=tuple(sorted(items.values(), key=lambda item: item.id)),
         change_relations=change_relations,
@@ -174,6 +184,7 @@ def build_evidence_catalog(
             *changes.diagnostics,
             *ownership_diagnostics,
             *structural_relation_diagnostics,
+            *contribution_diagnostics,
             *(
                 diagnostic
                 for result in closure_scan_results.results
@@ -249,6 +260,7 @@ def _put_structural_revision(
     hunks_by_id: dict[str, ChangedHunk],
 ) -> None:
         revision_side = structural_graph.revision_side
+        provider = structural_graph.index.provider
         changed_symbol_ids = {
             overlap.symbol.id for overlap in structural_graph.overlaps
         }
@@ -284,6 +296,7 @@ def _put_structural_revision(
                         changed=False,
                         operation="unchanged",
                         revision_side=revision_side,
+                        provider=provider,
                         structural_path_ids=tuple(
                             sorted(symbol_paths.get(symbol.id, ()))
                         ),
@@ -298,6 +311,7 @@ def _put_structural_revision(
                     changed=False,
                     operation="unchanged",
                     revision_side=revision_side,
+                    provider=provider,
                     structural_path_ids=(),
                     role="revision_fact",
                 ),
@@ -319,6 +333,7 @@ def _put_structural_revision(
                     changed=True,
                     operation=operation,
                     revision_side=revision_side,
+                    provider=provider,
                     change_relation_ids=relation_ids,
                     structural_path_ids=tuple(
                         sorted(symbol_paths.get(overlap.symbol.id, ()))
@@ -349,6 +364,7 @@ def _put_structural_revision(
                     classification=path_classification(relation.child.file_path),
                     profile="unknown",
                     authority="structural_provider",
+                    provider=provider,
                     revision_side=revision_side,
                     operation="observed",
                     role="structural_ownership",
@@ -394,6 +410,7 @@ def _put_structural_revision(
                     classification=path.classification,
                     profile="structural_path",
                     authority="structural_provider",
+                    provider=provider,
                     revision_side=revision_side,
                     operation="observed",
                     role="structural_path",
@@ -495,6 +512,7 @@ def _put_structural_changes(
                 classification=exemplar.classification,
                 profile=exemplar.profile,
                 authority="structural_provider",
+                provider=exemplar.provider,
                 revision_side="review",
                 operation=operation,
                 role="changed_anchor",
@@ -845,6 +863,7 @@ def _put_structural_ownership_changes(
                 ),
                 profile="unknown",
                 authority="structural_provider",
+                provider=provenance[0].provider,
                 revision_side="review",
                 operation=operation,
                 role="structural_ownership",
@@ -1029,6 +1048,7 @@ def _put_structural_relation_changes(
                 ),
                 profile="structural_path",
                 authority="structural_provider",
+                provider=path_items[0].provider if path_items else "",
                 revision_side="review",
                 operation=operation,
                 role="structural_relation",
@@ -1190,6 +1210,116 @@ def provided_evidence(
     )
 
 
+def contributed_evidence(provider: str, fact: ProviderFact) -> EvidenceItem:
+    """Normalize one provider fact into canonical, provider-attributed evidence.
+
+    The identity is provider-neutral (kind, subject, operation), so a second
+    provider asserting the same fact corroborates it, while a contradictory
+    operation stays a distinct fact for explicit conflict reporting.
+    """
+
+    fact.validate_consistency()
+    changed = fact.changed
+    revision_side = (
+        ("base" if fact.operation == "removed" else "head")
+        if changed
+        else "review"
+    )
+    signature = association_signature(fact.summary, fact.subject)
+    return EvidenceItem(
+        id=evidence_id(
+            fact.kind,
+            "\0".join((fact.subject, fact.operation)),
+        ),
+        summary=fact.summary,
+        kind=fact.kind,
+        classification=fact.classification,
+        profile=fact.profile,
+        authority="evidence_provider",
+        provider=provider,
+        revision_side=revision_side,
+        operation=fact.operation,
+        role="changed_anchor" if changed else "provided_context",
+        changed=changed,
+        head_signature=(
+            signature if revision_side != "base" else AssociationSignature()
+        ),
+        base_signature=(
+            signature if revision_side == "base" else AssociationSignature()
+        ),
+        sources=fact.sources,
+        metadata={
+            "subject": fact.subject,
+            **dict(fact.attributes),
+        },
+    )
+
+
+_CONFLICTING_PRESENCE_OPERATIONS = frozenset(
+    {"added", "modified", "replaced", "renamed"}
+)
+
+
+def _contribution_conflicts(
+    items: dict[str, EvidenceItem],
+) -> tuple[Diagnostic, ...]:
+    """Surface cross-provider contradictions instead of merging them away."""
+
+    grouped: dict[tuple[str, str], list[EvidenceItem]] = {}
+    for item in items.values():
+        if item.authority != "evidence_provider":
+            continue
+        subject = str(item.metadata.get("subject", ""))
+        grouped.setdefault((item.kind, subject), []).append(item)
+    diagnostics = []
+    for (kind, subject), group in sorted(grouped.items()):
+        present = tuple(
+            item
+            for item in group
+            if item.operation in _CONFLICTING_PRESENCE_OPERATIONS
+        )
+        absent = tuple(item for item in group if item.operation == "removed")
+        if not present or not absent:
+            continue
+        conflicted = (*present, *absent)
+        providers = sorted(
+            {
+                name
+                for item in conflicted
+                for name in (
+                    item.provider,
+                    *item.metadata.get("corroborating_providers", ()),
+                )
+                if name
+            }
+        )
+        if len(providers) < 2:
+            continue
+        conflicting_ids = tuple(sorted(item.id for item in conflicted))
+        for item in conflicted:
+            items[item.id] = replace(
+                item,
+                metadata={
+                    **item.metadata,
+                    "conflicting_evidence_ids": tuple(
+                        value for value in conflicting_ids if value != item.id
+                    ),
+                },
+            )
+        diagnostics.append(
+            Diagnostic(
+                code="evidence_provider_conflict",
+                message=(
+                    f"Providers {', '.join(providers)} assert contradictory "
+                    f"operations for {kind} {subject}; both facts were "
+                    "retained instead of being merged into one truth."
+                ),
+                severity="warning",
+            )
+        )
+    return tuple(diagnostics)
+
+
 def _changed_file_fallback(changed_file: ChangedFile) -> EvidenceItem:
     path = changed_file.display_path
     summary_path = (
@@ -1314,6 +1444,7 @@ def verification_evidence(observation: VerificationObservation) -> EvidenceItem:
         classification="runtime" if observation.kind == "manual" else "ci",
         profile="verification",
         authority="verification_provider",
+        provider=identity.provider,
         revision_side="review",
         operation="observed",
         role="verification",
@@ -1336,6 +1467,7 @@ def _symbol_item(
     changed: bool,
     operation: ChangeOperation,
     revision_side: StructuralRevision = "head",
+    provider: str = "",
     structural_path_ids: tuple[str, ...],
     extra_sources: tuple[SourceRef, ...] = (),
     head_signature: AssociationSignature = AssociationSignature(),
@@ -1356,6 +1488,7 @@ def _symbol_item(
         classification=path_classification(symbol.file_path),
         profile=fact_profile(symbol.file_path),
         authority="structural_provider",
+        provider=provider,
         revision_side=revision_side,
         operation=operation,
         role=role
@@ -1525,9 +1658,25 @@ def _put(items: dict[str, EvidenceItem], candidate: EvidenceItem) -> None:
         return
     if existing.kind != candidate.kind:
         raise ValueError(f"evidence ID collision for {candidate.id}")
+    metadata = _merge_metadata(existing, candidate)
+    if (
+        existing.provider
+        and candidate.provider
+        and existing.provider != candidate.provider
+    ):
+        metadata["corroborating_providers"] = tuple(
+            sorted(
+                {
+                    *metadata.get("corroborating_providers", ()),
+                    existing.provider,
+                    candidate.provider,
+                }
+            )
+        )
     items[candidate.id] = replace(
         existing,
         changed=existing.changed or candidate.changed,
+        provider=existing.provider or candidate.provider,
         operation=_merged_change_operation(existing, candidate),
         sources=_unique_sources((*existing.sources, *candidate.sources)),
         change_relation_ids=tuple(
@@ -1549,7 +1698,7 @@ def _put(items: dict[str, EvidenceItem], candidate: EvidenceItem) -> None:
             existing.base_signature,
             candidate.base_signature,
         ),
-        metadata=_merge_metadata(existing, candidate),
+        metadata=metadata,
         summary=candidate.summary if candidate.changed and not existing.changed else existing.summary,
     )
 

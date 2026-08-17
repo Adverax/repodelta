@@ -23,10 +23,17 @@ fixture or GitHub
        -> typed file/byte/match safety limits
        -> revision-aware coverage, path profiles, and candidate locations
   -> one canonical DiffHunkCollection
+  -> deterministic evidence-provider plan
+       -> declared capabilities and file selectors per provider
+       -> changed files routed to matching providers; unclaimed files stay explicit
   -> optional StructuralGraphProvider
        -> exact changed-hunk / symbol-span overlaps
        -> exact opposite-revision symbol counterparts
        -> bounded direction-aware paths to unchanged runtime/test neighbors
+  -> optional declared evidence providers
+       -> provider-attributed facts over non-code representations
+       -> typed contribution coverage with explicit limits
+       -> cross-provider contradictions retained as conflicts, never merged
    -> canonical EvidenceCatalog
        -> exact symbol for each mapped hunk
        -> changed-hunk evidence for each unmapped hunk
@@ -151,7 +158,10 @@ becoming alternate intake, classification, routing, or presentation paths.
 4. `ProjectionCandidateSet` records typed retrieval relevance and its reasons.
    It never means implemented, verified, satisfied, or in scope.
 5. Renderers project the brief and never infer or upgrade a conclusion.
-6. Structural providers return repository facts and diagnostics only.
+6. Structural and declared evidence providers return repository facts,
+   coverage, and diagnostics only. Every provider declares its capabilities
+   before running; capability levels describe what a provider can know, never
+   how much its facts should count.
 7. Closure scan plans own execution intent and target/path-scope predicates. Observed scans
    become revision-aware closure facts; neither plans nor zero-match observations prove
    satisfaction or repository-wide absence. A scope is never assessed as the
@@ -159,6 +169,10 @@ becoming alternate intake, classification, routing, or presentation paths.
 8. `TransformationAssessment` is the only authority for deterministic T/CC
    status. Missing association is unverified, local change is not global
    absence proof, and no status implies acceptance or mergeability.
+9. When two providers contradict each other about one subject, both facts are
+   retained and the contradiction becomes an explicit conflict diagnostic.
+   Contradictory evidence is never collapsed into one merged truth or a
+   numeric score.
 
 ## Semantic authority
 
@@ -283,6 +297,43 @@ Missing patches, stale or missing indexes, unindexed code, unmatched lines,
 and unavailable base input remain explicit diagnostics. A graph failure never
 prevents report generation.
 
+## Capability-aware evidence providers
+
+A repository is more than source code: schemas, API contracts, migrations,
+IaC, and workflows all carry acceptance-relevant semantics that one code
+graph cannot see. Beside the structural port, `EvidenceProvider` is the
+federated fact port. Every provider publishes a `ProviderDescriptor` before
+running: its concrete identity, its declared capabilities with an honest
+level per dimension (`full`, `partial`, `unavailable`), and deterministic
+changed-file selectors. Language support is never the unit of honesty; the
+declaration answers what the provider can actually know — Codegraph declares
+symbols, calls, imports, references, inheritance, and ownership as full while
+declaring data flow, SQL effects, and API compatibility unavailable; the SQL
+schema provider declares tables, columns, indexes, and constraints as partial
+migration-text effects and runtime schema state unavailable.
+
+A deterministic planner routes changed files to providers by declared
+selectors and produces one `ProviderPlan`. The plan is a dispatch decision,
+never coverage: providers keep final authority over per-file applicability,
+and files that match no declared provider stay first-class as unclaimed
+files, so the review states where nothing can be asserted at all.
+
+Each executed provider returns one `EvidenceContribution`: normalized facts
+(subject kind, subject identity, observed operation, sources) plus typed
+contribution coverage with explicit limits such as unparsed statements or
+uninterpreted removed lines. Facts normalize into the canonical
+`EvidenceCatalog` with `evidence_provider` authority and the concrete
+provider identity on every item. Fact identity is provider-neutral over
+subject and operation, so a second provider asserting the same fact
+corroborates it with recorded provenance. Contradictory operations from
+different providers stay distinct facts cross-linked by an explicit
+`evidence_provider_conflict` diagnostic; there is no silent merge and no
+numeric reconciliation. The review overview carries one per-provider
+coverage row — state, examined-versus-requested files, fact count, limits,
+and the declared capabilities — beside the structural coverage summary, so a
+reader always sees both what was found and where the review was able to
+assert anything.
+
 ## Canonical evidence and fallback
 
 Each parseable changed hunk is split into contiguous directional change spans.
@@ -303,8 +354,9 @@ symbols.
 
 Every `EvidenceItem` has a stable ID plus one semantic identity:
 
-- authority (`github_diff`, structural provider, verification provider, or
-  supplied);
+- authority (`github_diff`, structural provider, verification provider,
+  declared evidence provider, or supplied) plus the concrete provider
+  identity where one exists;
 - revision side (`head`, `base`, `review`, or `unchanged`);
 - change operation (`added`, `modified`, `removed`, `renamed`, `retained`,
   `observed`, or `unchanged`);

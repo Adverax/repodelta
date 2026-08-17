@@ -8,6 +8,11 @@ from pathlib import Path
 
 from repodelta.model.contracts import Diagnostic, SourceRef
 from repodelta.changes.hunks import ChangedHunk
+from repodelta.providers.capabilities import (
+    FileSelector,
+    ProviderCapability,
+    ProviderDescriptor,
+)
 from repodelta.providers.structural import (
     GraphPathStep,
     GraphSymbol,
@@ -49,6 +54,44 @@ _STRUCTURAL_SUFFIXES = frozenset(
     .tofu .ts .tsx .vb .vue .xsjs .xsjslib .xml
     """.split()
 )
+def codegraph_descriptor() -> ProviderDescriptor:
+    """Declare what the Codegraph structural index can honestly assert."""
+
+    return ProviderDescriptor(
+        provider=_PROVIDER,
+        capabilities=(
+            ProviderCapability(name="symbols", level="full"),
+            ProviderCapability(name="references", level="full"),
+            ProviderCapability(name="calls", level="full"),
+            ProviderCapability(name="imports", level="full"),
+            ProviderCapability(name="instantiates", level="full"),
+            ProviderCapability(name="inheritance", level="full"),
+            ProviderCapability(name="ownership", level="full"),
+            ProviderCapability(name="data_flow", level="unavailable"),
+            ProviderCapability(name="sql_effects", level="unavailable"),
+            ProviderCapability(name="api_compatibility", level="unavailable"),
+        ),
+        selectors=(
+            *(
+                FileSelector(kind="suffix", pattern=suffix)
+                for suffix in sorted(_STRUCTURAL_SUFFIXES)
+            ),
+            FileSelector(kind="exact", pattern="conf/routes"),
+            FileSelector(kind="suffix", pattern=".routes"),
+            FileSelector(kind="suffix", pattern=".app"),
+            FileSelector(kind="suffix", pattern=".app.src"),
+            FileSelector(kind="suffix", pattern=".routing.yml"),
+            FileSelector(kind="suffix", pattern=".routing.yaml"),
+            FileSelector(kind="basename_glob", pattern="application*.yml"),
+            FileSelector(kind="basename_glob", pattern="application*.yaml"),
+            FileSelector(kind="path_glob", pattern="templates/*.json"),
+            FileSelector(kind="path_glob", pattern="*/templates/*.json"),
+            FileSelector(kind="path_glob", pattern="sections/*.json"),
+            FileSelector(kind="path_glob", pattern="*/sections/*.json"),
+        ),
+    )
+
+
 _REQUIRED_COLUMNS = {
     "nodes": {
         "id",

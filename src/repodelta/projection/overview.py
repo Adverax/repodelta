@@ -6,6 +6,7 @@ from typing import Literal
 from repodelta.model.contracts import (
     CandidateConvergence,
     DiagnosticPresentation,
+    EvidenceProviderCoverage,
     ProjectionCandidateSet,
     ProjectionDiagnostic,
     EvidenceCatalog,
@@ -18,6 +19,8 @@ from repodelta.model.contracts import (
     ReviewSourcePacket,
     StructuralCoverage,
 )
+from repodelta.providers.evidence import EvidenceContribution
+from repodelta.providers.planning import ProviderPlan
 from repodelta.providers.structural import StructuralGraphCollection
 
 _SOURCE_COVERAGE_CODES = {
@@ -152,6 +155,8 @@ def build_review_overview(
     *,
     diagnostic_presentation: DiagnosticPresentation,
     structural_graph_disabled: bool,
+    provider_plan: ProviderPlan | None = None,
+    provider_contributions: tuple[EvidenceContribution, ...] = (),
 ) -> ReviewOverview:
     """Normalize review-wide status once for every presentation adapter."""
 
@@ -223,6 +228,14 @@ def build_review_overview(
         structural_coverage=_structural_coverage(
             structural_graph,
             disabled=structural_graph_disabled,
+        ),
+        provider_coverage=_provider_coverage(
+            structural_graph,
+            provider_plan,
+            provider_contributions,
+        ),
+        unclaimed_changed_files=(
+            provider_plan.unclaimed_files if provider_plan is not None else ()
         ),
         attention=tuple(attention),
         empty_review_message=(
@@ -368,6 +381,63 @@ def _pull_request_state(packet: ReviewSourcePacket) -> ReviewPullRequestState:
 def _attention_id(label: str, values: tuple[str, ...]) -> str:
     raw = "\0".join((label, *values))
     return "A:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _provider_coverage(
+    structural_graph: StructuralGraphCollection | None,
+    plan: ProviderPlan | None,
+    contributions: tuple[EvidenceContribution, ...],
+) -> tuple[EvidenceProviderCoverage, ...]:
+    """Summarize where each declared evidence provider could assert anything.
+
+    Structural graph providers are excluded: the canonical `StructuralCoverage`
+    already reports them and one provider must never own two coverage truths.
+    """
+
+    structural_providers = (
+        {result.index.provider for result in structural_graph.revisions}
+        if structural_graph is not None
+        else set()
+    )
+    contributions_by_provider = {
+        item.provider: item for item in contributions
+    }
+    planned_providers = (
+        tuple(entry.provider for entry in plan.entries)
+        if plan is not None
+        else ()
+    )
+    providers = sorted(
+        {*planned_providers, *contributions_by_provider} - structural_providers
+    )
+    rows = []
+    for provider in providers:
+        contribution = contributions_by_provider.get(provider)
+        if contribution is None:
+            entry = plan.entry_for(provider) if plan is not None else None
+            rows.append(
+                EvidenceProviderCoverage(
+                    provider=provider,
+                    state="not_requested",
+                    requested_file_count=(
+                        len(entry.matched_files) if entry is not None else 0
+                    ),
+                )
+            )
+            continue
+        coverage = contribution.coverage
+        rows.append(
+            EvidenceProviderCoverage(
+                provider=provider,
+                state=coverage.state,
+                requested_file_count=len(coverage.requested_files),
+                examined_file_count=len(coverage.examined_files),
+                fact_count=len(contribution.facts),
+                limits=coverage.limits,
+                capabilities=contribution.capabilities,
+            )
+        )
+    return tuple(rows)
 
 
 def _structural_coverage(

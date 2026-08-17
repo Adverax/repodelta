@@ -65,6 +65,7 @@ class DeterministicAnalyzer:
             analysis_input.structural_graph,
             supplied=analysis_input.supplied_evidence,
             closure_scan_results=closure_scan_results,
+            contributions=analysis_input.provider_contributions,
         )
         observed_transformation = reconstruct_observed_transformation(
             evidence_catalog
@@ -138,6 +139,8 @@ class DeterministicAnalyzer:
             analysis_input.structural_graph,
             diagnostic_presentation=diagnostic_presentation,
             structural_graph_disabled=analysis_input.structural_graph_disabled,
+            provider_plan=analysis_input.provider_plan,
+            provider_contributions=analysis_input.provider_contributions,
         )
         return ReviewBrief(
             packet=packet,
