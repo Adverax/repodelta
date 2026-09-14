@@ -71,6 +71,13 @@ TransformationPredicateExpectation = Literal[
 ]
 TransformationSubjectSelectionState = Literal[
     "no_structural_match",
+    "ambiguous_structural_match",
+]
+TransformationSubjectMatchKind = Literal[
+    "qualified_symbol",
+    "symbol_name",
+    "repository_path",
+    "verification_name",
 ]
 TransformationStructuralClosureState = Literal["budget_truncated"]
 StructuralTraversalCoverageState = Literal["complete", "truncated", "unknown"]
@@ -638,6 +645,7 @@ class TransformationSubjectMatch:
     selector_index: int
     selector_value: str
     evidence_id: str
+    selector_match_kind: TransformationSubjectMatchKind = "symbol_name"
 
 
 @dataclass(frozen=True)
@@ -656,7 +664,7 @@ class TransformationSubjectSelection:
 
     matches: tuple[TransformationSubjectMatch, ...] = ()
     diagnostics: tuple[TransformationSubjectDiagnostic, ...] = ()
-    schema_version: str = "transformation_subject_selection.v1"
+    schema_version: str = "transformation_subject_selection.v2"
 
     def by_claim_id(self) -> dict[str, tuple[TransformationSubjectMatch, ...]]:
         return {
@@ -670,7 +678,10 @@ class TransformationSubjectSelection:
         observed: ObservedTransformation,
         evidence_catalog: EvidenceCatalog,
     ) -> None:
-        if self.schema_version != "transformation_subject_selection.v1":
+        if self.schema_version not in {
+            "transformation_subject_selection.v1",
+            "transformation_subject_selection.v2",
+        }:
             raise ValueError("unsupported transformation subject selection schema")
         predicates = {
             item.id: item
@@ -716,6 +727,12 @@ class TransformationSubjectSelection:
                 or fact is None
                 or fact.kind != "structural_change"
                 or item.evidence_id not in observed_ids
+                or item.selector_match_kind not in {
+                    "qualified_symbol",
+                    "symbol_name",
+                    "repository_path",
+                    "verification_name",
+                }
             ):
                 raise ValueError(f"{item.id}: invalid structural subject match")
             if item.id != (
@@ -730,7 +747,8 @@ class TransformationSubjectSelection:
                 or item.selector_index < 1
                 or item.selector_index > len(predicate.values)
                 or not item.message.strip()
-                or item.state != "no_structural_match"
+                or item.state
+                not in {"no_structural_match", "ambiguous_structural_match"}
             ):
                 raise ValueError(f"{item.id}: invalid subject diagnostic")
             if item.id != (

@@ -37,6 +37,32 @@ from repodelta.evaluation.focus_provenance import (
     replay_producer_counterfactual,
     write_provenance_json,
 )
+from repodelta.evaluation.association_attribution import (
+    compare_association_attribution,
+    load_association_attribution,
+    observe_association_attribution,
+    write_association_attribution,
+    write_association_comparison,
+)
+from repodelta.evaluation.identifier_specificity import (
+    compare_identifier_policies,
+    load_identifier_specificity,
+    observe_identifier_specificity,
+    observe_identifier_specificity_from_artifacts,
+    write_identifier_policy_shadow,
+    write_identifier_specificity,
+)
+from repodelta.evaluation.rg_candidate_universe import (
+    compare_rg_retrieval,
+    load_rg_candidate_universe,
+    load_rg_retrieval_observation,
+    load_rg_semantic_reference,
+    observe_rg_retrieval,
+    prepare_rg_candidate_universe,
+    prepare_rg_semantic_reference_template,
+    verify_rg_semantic_reference,
+    write_rg_candidate_artifact,
+)
 from repodelta.evaluation.shadow import load_human_shadow_labels_from_packet
 from repodelta.intake.fixture import load_fixture
 from repodelta.intake.github import GitHubApiError, GitHubClient, GitHubPullRequestAdapter
@@ -358,6 +384,107 @@ def build_parser() -> argparse.ArgumentParser:
             "from the recorded contribution set"
         ),
     )
+    compare_association = subparsers.add_parser(
+        "compare-structural-association",
+        help="Compare recorded R/G association attribution with frozen labels",
+    )
+    compare_association.add_argument("--labeling-packet", required=True)
+    compare_association.add_argument("--observation", required=True)
+    compare_association.add_argument(
+        "--association-attribution",
+        "--association",
+        dest="association_attribution",
+        required=True,
+        help="Evaluation-only R/G association attribution sidecar",
+    )
+    compare_association.add_argument(
+        "--reference-labels",
+        "--human-labels",
+        dest="reference_labels",
+        required=True,
+        help="Frozen proposed or independently verified reference labels",
+    )
+    compare_association.add_argument("--output", required=True)
+    observe_identifier = subparsers.add_parser(
+        "observe-structural-identifier",
+        help="Record evaluation-only R/G identifier origins from frozen artifacts",
+    )
+    observe_identifier.add_argument("--labeling-packet", required=True)
+    observe_identifier.add_argument(
+        "--association-attribution",
+        "--association",
+        dest="association_attribution",
+        required=True,
+    )
+    observe_identifier.add_argument("--output", required=True)
+    compare_identifier = subparsers.add_parser(
+        "compare-structural-identifier",
+        help="Compare bounded R/G identifier-admission policies without replay",
+    )
+    compare_identifier.add_argument("--labeling-packet", required=True)
+    compare_identifier.add_argument("--observation", required=True)
+    compare_identifier.add_argument("--association-attribution", required=True)
+    compare_identifier.add_argument("--identifier-specificity", required=True)
+    compare_identifier.add_argument(
+        "--reference-labels",
+        "--human-labels",
+        dest="reference_labels",
+        required=True,
+    )
+    compare_identifier.add_argument("--output", required=True)
+    compare_rg_candidates = subparsers.add_parser(
+        "compare-rg-semantic-candidates",
+        help=(
+            "Compare an evaluation-only R/G candidate universe, retrieval "
+            "observation, and frozen semantic reference"
+        ),
+    )
+    compare_rg_candidates.add_argument("--candidate-universe", required=True)
+    compare_rg_candidates.add_argument("--retrieval-observation", required=True)
+    compare_rg_candidates.add_argument(
+        "--reference-labels",
+        "--semantic-reference",
+        dest="reference_labels",
+        required=True,
+    )
+    compare_rg_candidates.add_argument("--output", required=True)
+    prepare_rg_reference = subparsers.add_parser(
+        "prepare-rg-semantic-reference",
+        help="Write a blind R/G semantic/proofability label template",
+    )
+    prepare_rg_reference.add_argument("--candidate-universe", required=True)
+    prepare_rg_reference.add_argument(
+        "--proposed-by", default="unassigned", help="Reference proposal author"
+    )
+    prepare_rg_reference.add_argument("--output", required=True)
+    verify_rg_reference = subparsers.add_parser(
+        "verify-rg-semantic-reference",
+        help=(
+            "Verify a fully reviewed R/G semantic reference before semantic "
+            "metrics may be compared"
+        ),
+    )
+    verify_rg_reference.add_argument("--candidate-universe", required=True)
+    verify_rg_reference.add_argument(
+        "--reference-labels",
+        "--proposed-reference",
+        dest="reference_labels",
+        required=True,
+    )
+    verify_rg_reference.add_argument("--verified-by", required=True)
+    verify_rg_reference.add_argument("--verification-method", required=True)
+    verify_rg_reference.add_argument(
+        "--verification-evidence",
+        action="append",
+        default=[],
+        help="Stable evidence identity used by the independent verifier; repeatable",
+    )
+    verify_rg_reference.add_argument(
+        "--system-under-test-isolated",
+        action="store_true",
+        help="Confirm that retrieval observations remained unseen during labeling",
+    )
+    verify_rg_reference.add_argument("--output", required=True)
     return parser
 
 
@@ -419,6 +546,112 @@ def main() -> int:
                     provenance,
                     labels,
                     disabled_producers=args.disable_producer,
+                ),
+                args.output,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"repodelta: error: {exc}", file=sys.stderr)
+            return 2
+        print(output)
+        return 0
+    if args.command == "compare-structural-association":
+        try:
+            packet = load_structural_correctness_packet(args.labeling_packet)
+            observation = load_structural_correctness_observation(args.observation)
+            labels = load_structural_correctness_labels(
+                args.reference_labels, packet
+            )
+            attribution = load_association_attribution(
+                args.association_attribution
+            )
+            output = write_association_comparison(
+                compare_association_attribution(attribution, observation, labels),
+                args.output,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"repodelta: error: {exc}", file=sys.stderr)
+            return 2
+        print(output)
+        return 0
+    if args.command == "observe-structural-identifier":
+        try:
+            packet = load_structural_correctness_packet(args.labeling_packet)
+            attribution = load_association_attribution(
+                args.association_attribution
+            )
+            output = write_identifier_specificity(
+                observe_identifier_specificity_from_artifacts(packet, attribution),
+                args.output,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"repodelta: error: {exc}", file=sys.stderr)
+            return 2
+        print(output)
+        return 0
+    if args.command == "compare-structural-identifier":
+        try:
+            packet = load_structural_correctness_packet(args.labeling_packet)
+            observation = load_structural_correctness_observation(args.observation)
+            labels = load_structural_correctness_labels(
+                args.reference_labels, packet
+            )
+            attribution = load_association_attribution(
+                args.association_attribution
+            )
+            specificity = load_identifier_specificity(args.identifier_specificity)
+            output = write_identifier_policy_shadow(
+                compare_identifier_policies(
+                    packet, observation, labels, attribution, specificity
+                ),
+                args.output,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"repodelta: error: {exc}", file=sys.stderr)
+            return 2
+        print(output)
+        return 0
+    if args.command == "compare-rg-semantic-candidates":
+        try:
+            universe = load_rg_candidate_universe(args.candidate_universe)
+            retrieval = load_rg_retrieval_observation(
+                args.retrieval_observation
+            )
+            reference = load_rg_semantic_reference(args.reference_labels)
+            output = write_rg_candidate_artifact(
+                compare_rg_retrieval(universe, retrieval, reference),
+                args.output,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"repodelta: error: {exc}", file=sys.stderr)
+            return 2
+        print(output)
+        return 0
+    if args.command == "prepare-rg-semantic-reference":
+        try:
+            universe = load_rg_candidate_universe(args.candidate_universe)
+            output = write_rg_candidate_artifact(
+                prepare_rg_semantic_reference_template(
+                    universe, proposed_by=args.proposed_by
+                ),
+                args.output,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"repodelta: error: {exc}", file=sys.stderr)
+            return 2
+        print(output)
+        return 0
+    if args.command == "verify-rg-semantic-reference":
+        try:
+            universe = load_rg_candidate_universe(args.candidate_universe)
+            reference = load_rg_semantic_reference(args.reference_labels)
+            output = write_rg_candidate_artifact(
+                verify_rg_semantic_reference(
+                    reference,
+                    universe,
+                    verified_by=args.verified_by,
+                    verification_method=args.verification_method,
+                    verification_evidence=tuple(args.verification_evidence),
+                    system_under_test_isolated=args.system_under_test_isolated,
                 ),
                 args.output,
             )
@@ -540,7 +773,7 @@ def main() -> int:
                     ),
                 ),
             ).analyze(analysis_input)
-            structural_correctness_outputs: tuple[Path, Path, Path, Path] | None = None
+            structural_correctness_outputs: tuple[Path, ...] | None = None
             if args.structural_correctness_packet_output:
                 correctness_packet = prepare_structural_correctness_packet(brief)
                 packet_output = write_structural_correctness_artifact(
@@ -560,6 +793,37 @@ def main() -> int:
                     ),
                     f"{args.structural_correctness_packet_output}.provenance.json",
                 )
+                association_output = write_association_attribution(
+                    observe_association_attribution(brief, correctness_packet),
+                    f"{args.structural_correctness_packet_output}.association.json",
+                )
+                identifier_specificity_output = write_identifier_specificity(
+                    observe_identifier_specificity(
+                        brief,
+                        correctness_packet,
+                        load_association_attribution(association_output),
+                    ),
+                    f"{args.structural_correctness_packet_output}.identifier-specificity.json",
+                )
+                rg_candidate_universe = prepare_rg_candidate_universe(
+                    brief, correctness_packet
+                )
+                rg_candidate_output = write_rg_candidate_artifact(
+                    rg_candidate_universe,
+                    f"{args.structural_correctness_packet_output}.rg-candidates.json",
+                )
+                rg_retrieval_output = write_rg_candidate_artifact(
+                    observe_rg_retrieval(
+                        brief,
+                        correctness_packet,
+                        rg_candidate_universe,
+                    ),
+                    f"{args.structural_correctness_packet_output}.rg-retrieval.json",
+                )
+                rg_label_template_output = write_rg_candidate_artifact(
+                    prepare_rg_semantic_reference_template(rg_candidate_universe),
+                    f"{args.structural_correctness_packet_output}.rg-candidates.labels.template.json",
+                )
                 label_template_output = write_structural_correctness_artifact(
                     prepare_structural_correctness_label_template(
                         correctness_packet
@@ -571,6 +835,11 @@ def main() -> int:
                     observation_output,
                     label_template_output,
                     provenance_output,
+                    association_output,
+                    identifier_specificity_output,
+                    rg_candidate_output,
+                    rg_retrieval_output,
+                    rg_label_template_output,
                 )
             if args.llm_shadow_replay and not args.llm_shadow:
                 parser.error("--llm-shadow-replay requires --llm-shadow")
