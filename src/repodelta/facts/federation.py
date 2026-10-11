@@ -25,26 +25,37 @@ def ingest_contributions(
     plan: ProviderPlan,
     contributions: tuple[ProviderContribution, ...],
 ) -> FederatedEvidence:
-    """Hold every contribution to its declaration and dispatch, then tabulate.
+    """Hold every contribution to its planned declaration and dispatch, then tabulate.
 
-    Ingestion trusts nothing a provider returned: attribution, declared
-    capability and dispatched paths are re-validated here, and a dispatched
-    file the provider silently omitted becomes explicit unavailable coverage.
+    Ingestion trusts nothing a provider returned: the declaration it ships
+    must equal the one dispatch was planned from, and attribution, declared
+    capability and dispatched paths are re-validated against that planned
+    declaration. A dispatched file the provider silently omitted becomes
+    explicit unavailable coverage.
     """
 
     plan.validate_consistency()
     identities = tuple(item.descriptor.provider for item in contributions)
     if len(set(identities)) != len(identities):
         raise ValueError("provider contributions must have unique identities")
+    planned = {item.provider: item for item in plan.descriptors}
+    unplanned = set(identities) - set(planned)
+    if unplanned:
+        raise ValueError(f"providers not in the provider plan: {sorted(unplanned)}")
+    missing = set(planned) - set(identities)
+    if missing:
+        raise ValueError(f"planned providers returned nothing: {sorted(missing)}")
     entries = {entry.provider: entry for entry in plan.entries}
-    unknown = set(entries) - set(identities)
-    if unknown:
-        raise ValueError(f"dispatched providers returned nothing: {sorted(unknown)}")
     facts: list[ProviderFact] = []
     rows: list[ProviderCoverage] = []
     diagnostics: list[Diagnostic] = []
     for contribution in sorted(contributions, key=lambda item: item.descriptor.provider):
-        descriptor = contribution.descriptor
+        descriptor = planned[contribution.descriptor.provider]
+        if contribution.descriptor != descriptor:
+            raise ValueError(
+                f"{descriptor.provider}: declaration differs from its planned "
+                "declaration"
+            )
         observation = contribution.observation
         entry = entries.get(descriptor.provider, ProviderPlanEntry(descriptor.provider))
         observation.validate_consistency(

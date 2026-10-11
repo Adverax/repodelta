@@ -73,6 +73,7 @@ def plan_providers(
             if head[descriptor.provider] or base[descriptor.provider]
         ),
         unclaimed_files=tuple(sorted(unclaimed)),
+        descriptors=ordered,
     )
     plan.validate_consistency()
     return plan
@@ -90,7 +91,8 @@ def run_providers(
     A provider that raises contributes explicit unavailable coverage for its
     dispatched files and a diagnostic; it never contributes silence. A provider
     with nothing dispatched is still recorded so its declared capabilities stay
-    review-visible.
+    review-visible. Each contribution carries the descriptor the provider
+    declares now, so ingestion can reject drift from the planned declaration.
     """
 
     entries = {entry.provider: entry for entry in plan.entries}

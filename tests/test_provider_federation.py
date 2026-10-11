@@ -245,10 +245,75 @@ def test_fact_attributed_to_another_provider_is_rejected() -> None:
         _catalog(_packet(), (provider,))
 
 
-# 6/7. corroboration ----------------------------------------------------------
+class _Drifting(_Provider):
+    """Declares one descriptor for planning and another when it runs."""
+
+    def __init__(self, planned, running, observe) -> None:
+        super().__init__(planned, observe)
+        self._running = running
+        self._calls = 0
+
+    def descriptor(self) -> ProviderDescriptor:
+        self._calls += 1
+        return self._descriptor if self._calls == 1 else self._running
 
 
-def test_one_provider_repeating_a_fact_does_not_corroborate_itself() -> None:
+def test_contribution_whose_declaration_drifted_after_planning_is_rejected() -> None:
+    planned = _descriptor("drifter")
+    widened = _descriptor("drifter", capabilities=("column_state", "table_drop"))
+    provider = _Drifting(
+        planned,
+        widened,
+        lambda head, base: _observation(
+            "drifter", _fact("drifter", capability="table_drop")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="differs from its planned declaration"):
+        _catalog(_packet(), (provider,))
+
+
+def test_contribution_from_an_unplanned_provider_is_rejected() -> None:
+    packet = _packet()
+    plan = plan_providers(packet.changed_files, (_descriptor("sql"),))
+    intruder = _descriptor(
+        "intruder", FileSelector("exact", "never.txt"), capabilities=("anything",)
+    )
+
+    with pytest.raises(ValueError, match="not in the provider plan"):
+        build_evidence_catalog(
+            packet,
+            parse_changed_files(packet.changed_files),
+            provider_plan=plan,
+            provider_contributions=(
+                ProviderContribution(_descriptor("sql"), ProviderObservation("sql")),
+                ProviderContribution(intruder, ProviderObservation("intruder")),
+            ),
+        )
+
+
+def test_planned_provider_with_nothing_dispatched_must_still_contribute() -> None:
+    packet = _packet()
+    plan = plan_providers(
+        packet.changed_files,
+        (_descriptor("sql"), _descriptor("idle", FileSelector("exact", "never.txt"))),
+    )
+
+    with pytest.raises(ValueError, match="returned nothing"):
+        build_evidence_catalog(
+            packet,
+            parse_changed_files(packet.changed_files),
+            provider_plan=plan,
+            provider_contributions=(
+                ProviderContribution(_descriptor("sql"), ProviderObservation("sql")),
+            ),
+        )
+
+
+# 6/7. agreement -------------------------------------------------------------
+
+
+def test_one_provider_repeating_a_fact_does_not_agree_with_itself() -> None:
     provider = _fixed(
         "solo", _fact("solo", line=1), _fact("solo", line=9)
     )
@@ -258,10 +323,10 @@ def test_one_provider_repeating_a_fact_does_not_corroborate_itself() -> None:
     (item,) = [item for item in catalog.items if item.kind == "schema_fact"]
     assert item.providers == ("solo",)
     assert [source.line_start for source in item.sources] == [1, 9]
-    assert catalog.provider_conflicts == ()
+    assert catalog.provider_divergences == ()
 
 
-def test_two_providers_asserting_the_same_value_corroborate_one_item() -> None:
+def test_two_providers_asserting_the_same_value_share_one_item() -> None:
     packet = _packet(
         ChangedFile(base_path=None, head_path="migrations/001.sql", status="added"),
         ChangedFile(base_path=None, head_path="alembic/versions/1.py", status="added"),
@@ -282,10 +347,10 @@ def test_two_providers_asserting_the_same_value_corroborate_one_item() -> None:
         "migrations/001.sql",
         "alembic/versions/1.py",
     }
-    assert catalog.provider_conflicts == ()
+    assert catalog.provider_divergences == ()
 
 
-# 8/9. conflict ---------------------------------------------------------------
+# 8/9. divergence ------------------------------------------------------------
 
 
 def _two_provider_packet() -> ReviewSourcePacket:
@@ -295,7 +360,7 @@ def _two_provider_packet() -> ReviewSourcePacket:
     )
 
 
-def test_contradictory_facts_from_two_providers_are_retained_and_typed() -> None:
+def test_differing_assertions_from_two_providers_are_retained_and_typed() -> None:
     sql = _fixed("sql", _fact("sql", value="false", path="migrations/001.sql"))
     alembic = _fixed(
         "alembic",
@@ -308,16 +373,16 @@ def test_contradictory_facts_from_two_providers_are_retained_and_typed() -> None
 
     facts = [item for item in catalog.items if item.kind == "schema_fact"]
     assert sorted(item.schema_fact.value for item in facts) == ["false", "true"]
-    (conflict,) = catalog.provider_conflicts
-    assert (conflict.subject, conflict.attribute) == ("column:users.email", "nullable")
-    assert [(side.value, side.providers) for side in conflict.sides] == [
+    (divergence,) = catalog.provider_divergences
+    assert (divergence.subject, divergence.attribute) == ("column:users.email", "nullable")
+    assert [(side.value, side.providers) for side in divergence.sides] == [
         ("false", ("sql",)),
         ("true", ("alembic",)),
     ]
-    assert {side.evidence_id for side in conflict.sides} == {item.id for item in facts}
+    assert {side.evidence_id for side in divergence.sides} == {item.id for item in facts}
 
 
-def test_one_provider_contradicting_itself_is_not_a_provider_conflict() -> None:
+def test_one_provider_differing_from_itself_is_not_a_provider_divergence() -> None:
     provider = _fixed(
         "solo", _fact("solo", value="false", line=1), _fact("solo", value="true", line=2)
     )
@@ -325,12 +390,12 @@ def test_one_provider_contradicting_itself_is_not_a_provider_conflict() -> None:
     catalog = _catalog(_packet(), (provider,))
 
     assert len([i for i in catalog.items if i.kind == "schema_fact"]) == 2
-    assert catalog.provider_conflicts == ()
+    assert catalog.provider_divergences == ()
 
 
-def test_conflict_is_scoped_to_one_revision_side() -> None:
+def test_divergence_is_scoped_to_one_revision_side() -> None:
     # One modified file, dispatched to both providers on both sides. The
-    # providers disagree only across sides, which is not a contradiction.
+    # providers disagree only across sides, which is not a divergence.
     packet = _packet(
         ChangedFile(
             base_path="migrations/001.sql",
@@ -359,14 +424,14 @@ def test_conflict_is_scoped_to_one_revision_side() -> None:
         packet, (observing("a", "head", "false"), observing("b", "head", "true"))
     )
 
-    assert across_sides.provider_conflicts == ()
-    assert [c.revision_side for c in within_side.provider_conflicts] == ["head"]
+    assert across_sides.provider_divergences == ()
+    assert [c.revision_side for c in within_side.provider_divergences] == ["head"]
 
 
 # 10. tampering ---------------------------------------------------------------
 
 
-def _conflicted_catalog():
+def _diverging_catalog():
     sql = _fixed("sql", _fact("sql", value="false", path="migrations/001.sql"))
     alembic = _fixed(
         "alembic",
@@ -377,7 +442,7 @@ def _conflicted_catalog():
 
 
 def test_tampered_provider_identity_fails_validation() -> None:
-    catalog = _conflicted_catalog()
+    catalog = _diverging_catalog()
     target = next(item for item in catalog.items if item.kind == "schema_fact")
     tampered = replace(
         catalog,
@@ -392,7 +457,7 @@ def test_tampered_provider_identity_fails_validation() -> None:
 
 
 def test_a_non_provider_fact_cannot_claim_a_provider() -> None:
-    catalog = _conflicted_catalog()
+    catalog = _diverging_catalog()
     target = next(item for item in catalog.items if item.authority == "github_diff")
     tampered = replace(
         catalog,
@@ -407,7 +472,7 @@ def test_a_non_provider_fact_cannot_claim_a_provider() -> None:
 
 
 def test_provider_without_coverage_fails_validation() -> None:
-    catalog = _conflicted_catalog()
+    catalog = _diverging_catalog()
     tampered = replace(
         catalog,
         provider_coverage=tuple(
@@ -419,23 +484,50 @@ def test_provider_without_coverage_fails_validation() -> None:
         tampered.validate_consistency()
 
 
-def test_persisted_conflict_is_recomputed_not_trusted() -> None:
-    catalog = _conflicted_catalog()
+def test_persisted_coverage_capabilities_are_held_to_the_plan() -> None:
+    catalog = _diverging_catalog()
+    widened = tuple(
+        replace(row, capabilities=(*row.capabilities, "table_drop"))
+        if row.provider == "sql"
+        else row
+        for row in catalog.provider_coverage
+    )
+
+    with pytest.raises(ValueError, match="planned declaration"):
+        replace(catalog, provider_coverage=widened).validate_consistency()
+
+
+def test_persisted_plan_cannot_dispatch_a_path_its_descriptor_never_claimed() -> None:
+    catalog = _diverging_catalog()
+    plan = catalog.provider_plan
+    entries = tuple(
+        replace(entry, head_paths=tuple(sorted((*entry.head_paths, "alembic/versions/1.py"))))
+        if entry.provider == "sql"
+        else entry
+        for entry in plan.entries
+    )
+
+    with pytest.raises(ValueError, match="never claimed"):
+        replace(catalog, provider_plan=replace(plan, entries=entries)).validate_consistency()
+
+
+def test_persisted_divergence_is_recomputed_not_trusted() -> None:
+    catalog = _diverging_catalog()
 
     with pytest.raises(ValueError, match="do not match"):
-        replace(catalog, provider_conflicts=()).validate_consistency()
+        replace(catalog, provider_divergences=()).validate_consistency()
     forged = replace(
-        catalog.provider_conflicts[0],
+        catalog.provider_divergences[0],
         sides=tuple(
-            replace(side, value="maybe") for side in catalog.provider_conflicts[0].sides
+            replace(side, value="maybe") for side in catalog.provider_divergences[0].sides
         ),
     )
     with pytest.raises(ValueError):
-        replace(catalog, provider_conflicts=(forged,)).validate_consistency()
+        replace(catalog, provider_divergences=(forged,)).validate_consistency()
 
 
 def test_coverage_state_is_recomputed_from_its_files() -> None:
-    catalog = _conflicted_catalog()
+    catalog = _diverging_catalog()
     row = replace(catalog.provider_coverage[0], state="unavailable")
 
     with pytest.raises(ValueError, match="does not match files"):
@@ -529,7 +621,7 @@ def test_declined_and_uninterpreted_files_are_distinguished() -> None:
 # sinks: the overview consumes the catalog's result ----------------------------
 
 
-def test_overview_reports_provider_coverage_unclaimed_files_and_conflicts() -> None:
+def test_overview_reports_provider_coverage_unclaimed_files_and_divergences() -> None:
     packet = _packet(
         ChangedFile(base_path=None, head_path="migrations/001.sql", status="added"),
         ChangedFile(base_path=None, head_path="alembic/versions/1.py", status="added"),
@@ -549,8 +641,13 @@ def test_overview_reports_provider_coverage_unclaimed_files_and_conflicts() -> N
     overview = brief.overview
     assert [row.provider for row in overview.provider_coverage] == ["alembic", "sql"]
     assert overview.unclaimed_changed_files == ("notes/todo.md",)
-    assert overview.provider_conflicts == brief.evidence_catalog.provider_conflicts
-    assert any(item.label == "Provider conflicts" for item in overview.attention)
+    assert overview.provider_divergences == brief.evidence_catalog.provider_divergences
+    (attention,) = [
+        item for item in overview.attention if item.label == "Provider assertions differ"
+    ]
+    # The projection must not present a divergence as a proven contradiction.
+    assert "effective database state is not established" in attention.message
+    assert "contradict" not in attention.message.casefold()
 
 
 def test_without_providers_every_changed_file_is_unclaimed_not_silent() -> None:

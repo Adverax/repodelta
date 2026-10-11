@@ -55,7 +55,7 @@ def _repository(tmp_path: Path) -> tuple[Path, str]:
     return root, revision
 
 
-def test_mixed_change_set_shows_routing_corroboration_conflict_and_the_gap(
+def test_mixed_change_set_shows_routing_agreement_divergence_and_the_gap(
     tmp_path: Path,
 ) -> None:
     root, revision = _repository(tmp_path)
@@ -106,7 +106,7 @@ def test_mixed_change_set_shows_routing_corroboration_conflict_and_the_gap(
     assert "op.alter_column.nullable" in rows["alembic-migration"].capabilities
     assert "alter_column_set_not_null" in rows["sql-schema"].capabilities
 
-    # Corroboration: both providers state users.email is NOT NULL -> one fact.
+    # Agreement: both providers state users.email is NOT NULL -> one fact.
     facts = {
         (item.schema_fact.subject, item.schema_fact.value): item
         for item in brief.evidence_catalog.items
@@ -119,16 +119,17 @@ def test_mixed_change_set_shows_routing_corroboration_conflict_and_the_gap(
         "migrations/002_email.sql",
     }
 
-    # Conflict: nickname is NOT NULL in SQL and nullable in Alembic. Both kept.
+    # Divergence: nickname is NOT NULL in SQL and nullable in Alembic. Both kept;
+    # these are distinct statements, so no effective-state contradiction is claimed.
     assert facts[("column:users.nickname", "false")].providers == ("sql-schema",)
     assert facts[("column:users.nickname", "true")].providers == ("alembic-migration",)
-    (conflict,) = overview.provider_conflicts
-    assert (conflict.subject, conflict.attribute) == (
+    (divergence,) = overview.provider_divergences
+    assert (divergence.subject, divergence.attribute) == (
         "column:users.nickname",
         "nullable",
     )
-    assert [side.value for side in conflict.sides] == ["false", "true"]
-    assert any(item.label == "Provider conflicts" for item in overview.attention)
+    assert [side.value for side in divergence.sides] == ["false", "true"]
+    assert any(item.label == "Provider assertions differ" for item in overview.attention)
 
     # The conclusion-free guardrail: nothing merged or scored.
     assert len([i for i in facts.values() if i.schema_fact.subject == "column:users.nickname"]) == 2
@@ -141,7 +142,8 @@ def test_mixed_change_set_shows_routing_corroboration_conflict_and_the_gap(
     assert "Evidence provider alembic-migration: partial" in html
     assert "Evidence provider sql-schema: partial" in html
     assert "2 changed files claimed by no provider" in html
-    assert "Provider conflicts" in html
+    assert "Provider assertions differ" in html
+    assert "the effective database state is not established" in html
     assert format_unclaimed_files(overview.unclaimed_changed_files) == (
         "Evidence providers: 2 changed files claimed by no provider · "
         "app/service.py, docs/notes.md"

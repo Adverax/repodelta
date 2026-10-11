@@ -194,30 +194,40 @@ becoming alternate intake, classification, routing, or presentation paths.
 10. Evidence providers are federated behind one boundary. Each declares a
     concrete identity, capabilities and path selectors before it runs
     (`ProviderDescriptor`). `plan_providers` dispatches changed files
-    deterministically and non-exclusively by each side's own path; a file no
+    deterministically and non-exclusively by each side's own path and records
+    every planned declaration in `ProviderPlan.descriptors`; a file no
     provider claims is recorded in `ProviderPlan.unclaimed_files`, never
     dropped. Dispatch is not a coverage claim: each provider keeps final
     authority over what it examined and reports typed per-file coverage
     (`observed`, `partial` with gaps, or `unavailable`). Providers return
     facts, coverage and diagnostics only, and no confidence score or
     cross-provider ranking exists. Ingestion trusts nothing: a contribution
-    is re-validated against its descriptor and dispatch (attribution, declared
-    capability, coverage for every fact, no coverage outside the dispatch), a
-    dispatched file a provider silently omitted becomes `unavailable`, and a
-    provider that raises contributes `unavailable` coverage plus a diagnostic.
-    Provider-neutral schema facts are keyed by (revision side, subject,
-    attribute, value): two providers asserting the same value corroborate one
-    `EvidenceItem` that records both identities and sources; one provider
-    repeating a fact does not corroborate itself. Different values from
+    must come from a planned provider and carry exactly its planned
+    declaration, every planned provider must contribute, and each observation
+    is re-validated against that planned declaration and its dispatch
+    (attribution, declared capability, coverage for every fact, no coverage
+    outside the dispatch). A dispatched file a provider silently omitted
+    becomes `unavailable`, and a provider that raises contributes
+    `unavailable` coverage plus a diagnostic.
+    Provider-neutral schema facts record what a source statement asserts, not
+    the effective database state after migrations run. They are keyed by
+    (revision side, subject, attribute, value): two providers asserting the
+    same value share one `EvidenceItem` that records both identities and
+    sources; agreement is not proof of effective state, and one provider
+    repeating a fact does not agree with itself. Different values from
     different providers about one (side, subject, attribute) are both retained
-    and surface as a typed `EvidenceConflict`; contradictory evidence is never
-    merged or scored. One provider asserting different values (sequential
-    statements) is not a conflict. Conflicts and coverage state are derived
-    state: `EvidenceCatalog.validate_consistency` recomputes them instead of
-    trusting a persisted record. `ReviewOverview` projects provider coverage,
-    unclaimed files and conflicts verbatim; renderers never re-decide them.
+    and surface as a typed `EvidenceDivergence`: the providers' sources assert
+    different values, which may be sequential statements and is not a proven
+    contradiction. Divergent evidence is never merged or scored. One provider
+    asserting different values is not a divergence. Divergences and coverage
+    state are derived state: `EvidenceCatalog.validate_consistency` recomputes
+    divergences from the facts and holds coverage rows and dispatch to the
+    plan's declarations instead of trusting a persisted record.
+    `ReviewOverview` projects provider coverage, unclaimed files and
+    divergences verbatim, stating that effective state is not established;
+    renderers never re-decide them.
     Permitted loss: schema identifiers are case-folded and unquoted, so names
-    differing only by case corroborate; schema-qualified names are kept, so
+    differing only by case agree; schema-qualified names are kept, so
     `public.users` and `users` do not.
 
 ## Semantic authority
@@ -366,7 +376,7 @@ Every `EvidenceItem` has a stable ID plus one semantic identity:
 - authority (`github_diff`, structural provider, verification provider,
   closure scan provider, evidence provider, or supplied);
 - provider identities: the concrete providers that asserted the fact (empty
-  only for `github_diff` and `supplied`; more than one when corroborated);
+  only for `github_diff` and `supplied`; more than one when providers agree);
 - revision side (`head`, `base`, `review`, or `unchanged`);
 - change operation (`added`, `modified`, `removed`, `renamed`, `retained`,
   `observed`, or `unchanged`);

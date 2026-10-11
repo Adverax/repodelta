@@ -2089,14 +2089,34 @@ class ProviderPlanEntry:
 
 @dataclass(frozen=True)
 class ProviderPlan:
-    """Deterministic dispatch of changed files, including the unclaimed ones."""
+    """Deterministic dispatch of changed files, including the unclaimed ones.
+
+    ``descriptors`` are the pre-run declarations dispatch was computed from,
+    for every planned provider, dispatched or not. They are the authority
+    ingestion holds each contribution to.
+    """
 
     changed_files: tuple[str, ...] = ()
     entries: tuple[ProviderPlanEntry, ...] = ()
     unclaimed_files: tuple[str, ...] = ()
+    descriptors: tuple[ProviderDescriptor, ...] = ()
     schema_version: str = "provider_plan.v1"
 
     def validate_consistency(self) -> None:
+        declared = tuple(item.provider for item in self.descriptors)
+        if declared != tuple(sorted(set(declared))):
+            raise ValueError("provider plan descriptors must be sorted and unique")
+        descriptors = dict(zip(declared, self.descriptors))
+        for entry in self.entries:
+            descriptor = descriptors.get(entry.provider)
+            if descriptor is None:
+                raise ValueError(f"{entry.provider}: dispatched without a declaration")
+            for path in (*entry.head_paths, *entry.base_paths):
+                if not descriptor.claims(path):
+                    raise ValueError(
+                        f"{entry.provider}: dispatched {path} its descriptor "
+                        "never claimed"
+                    )
         for name, values in (
             ("changed_files", self.changed_files),
             ("unclaimed_files", self.unclaimed_files),
@@ -2268,7 +2288,11 @@ def aggregate_provider_state(
 
 @dataclass(frozen=True)
 class SchemaFact:
-    """Provider-neutral schema assertion: what corroboration and conflict key on."""
+    """Provider-neutral schema assertion: what agreement and divergence key on.
+
+    It records what a source statement asserts, not the effective database
+    state after migrations run.
+    """
 
     subject: str
     attribute: str
@@ -2277,7 +2301,7 @@ class SchemaFact:
 
 def _schema_identifier(raw: str) -> str:
     # Permitted loss: quoting and case are folded, so identifiers that differ
-    # only by case corroborate. Schema qualification is kept, never stripped.
+    # only by case agree. Schema qualification is kept, never stripped.
     return raw.strip().strip('"').strip("`").strip().casefold()
 
 
@@ -2290,31 +2314,36 @@ def column_subject(table: str, column: str) -> str:
 
 
 @dataclass(frozen=True)
-class EvidenceConflictSide:
+class EvidenceDivergenceSide:
     value: str
     evidence_id: str
     providers: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class EvidenceConflict:
-    """Contradictory provider assertions, both retained and never merged."""
+class EvidenceDivergence:
+    """Different providers assert different values for one (side, subject, attribute).
+
+    Each side is a source assertion, retained and never merged. A divergence
+    does not establish contradictory or effective database state: statements
+    from distinct files can be sequential migrations on one revision.
+    """
 
     id: str
     subject: str
     attribute: str
     revision_side: Literal["base", "head"]
-    sides: tuple[EvidenceConflictSide, ...]
-    schema_version: str = "evidence_conflict.v1"
+    sides: tuple[EvidenceDivergenceSide, ...]
+    schema_version: str = "evidence_divergence.v1"
 
     def validate_consistency(self) -> None:
         values = tuple(side.value for side in self.sides)
         if len(self.sides) < 2 or len(set(values)) != len(values):
-            raise ValueError(f"{self.id}: conflict requires distinct values")
+            raise ValueError(f"{self.id}: divergence requires distinct values")
         if values != tuple(sorted(values)):
-            raise ValueError(f"{self.id}: conflict sides must be ordered")
+            raise ValueError(f"{self.id}: divergence sides must be ordered")
         if len({provider for side in self.sides for provider in side.providers}) < 2:
-            raise ValueError(f"{self.id}: conflict requires distinct providers")
+            raise ValueError(f"{self.id}: divergence requires distinct providers")
 
 
 @dataclass(frozen=True)
@@ -2655,7 +2684,7 @@ class EvidenceCatalog:
     closure_scan_diagnostics: tuple[ClosureScanDiagnostic, ...] = ()
     provider_plan: ProviderPlan = ProviderPlan()
     provider_coverage: tuple[ProviderCoverage, ...] = ()
-    provider_conflicts: tuple[EvidenceConflict, ...] = ()
+    provider_divergences: tuple[EvidenceDivergence, ...] = ()
     schema_version: str = "evidence_catalog.v21"
 
     def by_id(self) -> dict[str, EvidenceItem]:
@@ -2974,33 +3003,45 @@ class EvidenceCatalog:
                 raise ValueError(
                     f"{item.id}: fact attributed to a provider without coverage"
                 )
-        # Conflicts are derived state: recompute them from the canonical facts
-        # instead of trusting a persisted record.
-        if self.provider_conflicts != derive_evidence_conflicts(self.items):
+        # Coverage rows report the capabilities a provider operated under; the
+        # persisted plan's pre-run declarations are their authority.
+        if tuple(
+            (item.provider, item.capabilities) for item in self.provider_coverage
+        ) != tuple(
+            (item.provider, item.capabilities) for item in self.provider_plan.descriptors
+        ):
             raise ValueError(
-                "provider conflicts do not match the catalog's schema facts"
+                "provider coverage does not match its planned declarations"
             )
-        for conflict in self.provider_conflicts:
-            conflict.validate_consistency()
+        # Divergences are derived state: recompute them from the canonical facts
+        # instead of trusting a persisted record.
+        if self.provider_divergences != derive_evidence_divergences(self.items):
+            raise ValueError(
+                "provider divergences do not match the catalog's schema facts"
+            )
+        for divergence in self.provider_divergences:
+            divergence.validate_consistency()
 
 
-def evidence_conflict_id(
+def evidence_divergence_id(
     revision_side: str, subject: str, attribute: str
 ) -> str:
     digest = hashlib.sha256(
         "\0".join((revision_side, subject, attribute)).encode()
     ).hexdigest()[:20]
-    return f"C:{digest}"
+    return f"PD:{digest}"
 
 
-def derive_evidence_conflicts(
+def derive_evidence_divergences(
     items: tuple[EvidenceItem, ...],
-) -> tuple[EvidenceConflict, ...]:
-    """Cross-provider contradictions over one (side, subject, attribute).
+) -> tuple[EvidenceDivergence, ...]:
+    """Cross-provider divergence over one (side, subject, attribute).
 
-    Two facts contradict when their values differ and different providers
-    asserted them. One provider asserting differing values (sequential
-    statements) is not a conflict. Nothing is merged, ranked or scored.
+    Two assertions diverge when their values differ and different providers
+    made them. The signal is that providers disagree about what their sources
+    assert, not that the database state is contradictory: the assertions may
+    come from distinct, sequential statements. One provider asserting
+    differing values is not a divergence. Nothing is merged, ranked or scored.
     """
 
     groups: dict[tuple[str, str, str], list[EvidenceItem]] = {}
@@ -3013,7 +3054,7 @@ def derive_evidence_conflicts(
             item.schema_fact.attribute,
         )
         groups.setdefault(key, []).append(item)
-    conflicts: list[EvidenceConflict] = []
+    divergences: list[EvidenceDivergence] = []
     for (side, subject, attribute), members in sorted(groups.items()):
         by_value = sorted(
             members,
@@ -3038,14 +3079,14 @@ def derive_evidence_conflicts(
         ]
         if len(involved) < 2:
             continue
-        conflicts.append(
-            EvidenceConflict(
-                id=evidence_conflict_id(side, subject, attribute),
+        divergences.append(
+            EvidenceDivergence(
+                id=evidence_divergence_id(side, subject, attribute),
                 subject=subject,
                 attribute=attribute,
                 revision_side=side,  # type: ignore[arg-type]
                 sides=tuple(
-                    EvidenceConflictSide(
+                    EvidenceDivergenceSide(
                         value=member.schema_fact.value,
                         evidence_id=member.id,
                         providers=member.providers,
@@ -3055,7 +3096,7 @@ def derive_evidence_conflicts(
                 ),
             )
         )
-    return tuple(conflicts)
+    return tuple(divergences)
 
 
 @dataclass(frozen=True)
@@ -4691,10 +4732,10 @@ class ReviewOverview:
         default_factory=LLMShadowExecutionSummary
     )
     # Projected verbatim from the EvidenceCatalog; the overview never re-decides
-    # provider coverage, routing or conflicts.
+    # provider coverage, routing or divergences.
     provider_coverage: tuple[ProviderCoverage, ...] = ()
     unclaimed_changed_files: tuple[str, ...] = ()
-    provider_conflicts: tuple[EvidenceConflict, ...] = ()
+    provider_divergences: tuple[EvidenceDivergence, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -35,7 +35,7 @@ from repodelta.model.contracts import (
     VerificationObservation,
     VerificationIdentity,
     canonical_verification_name,
-    derive_evidence_conflicts,
+    derive_evidence_divergences,
 )
 from repodelta.changes.hunks import (
     ChangedHunk,
@@ -219,7 +219,7 @@ def build_evidence_catalog(
         ),
         provider_plan=plan,
         provider_coverage=federated.coverage,
-        provider_conflicts=derive_evidence_conflicts(catalog_items),
+        provider_divergences=derive_evidence_divergences(catalog_items),
     )
     catalog.validate_consistency()
     return catalog
@@ -1200,8 +1200,9 @@ def schema_fact_evidence(fact: ProviderFact) -> EvidenceItem:
     """One provider-neutral identity per (side, subject, attribute, value).
 
     Two providers asserting the same value land on one item whose sources and
-    provider identities record both assertions; differing values stay separate
-    items and surface as a typed conflict, never merged.
+    provider identities record both assertions; agreement is not proof of
+    effective state. Differing values stay separate items and surface as a
+    typed divergence, never merged.
     """
 
     identity = "\0".join(

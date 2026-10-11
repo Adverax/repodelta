@@ -201,22 +201,29 @@ def build_review_overview(
                 scope="review",
             )
         )
-    if evidence_catalog.provider_conflicts:
+    if evidence_catalog.provider_divergences:
         attention.append(
             ReviewAttention(
                 id=_attention_id(
-                    "provider_conflicts",
-                    tuple(item.id for item in evidence_catalog.provider_conflicts),
+                    "provider_divergences",
+                    tuple(item.id for item in evidence_catalog.provider_divergences),
                 ),
-                label="Provider conflicts",
+                label="Provider assertions differ",
                 message=" ".join(
-                    f"{item.subject} {item.attribute} ({item.revision_side}): "
-                    + " vs ".join(
-                        f"{side.value} by {', '.join(side.providers)}"
-                        for side in item.sides
+                    (
+                        *(
+                            f"{item.subject} {item.attribute} ({item.revision_side}): "
+                            + " vs ".join(
+                                f"{side.value} by {', '.join(side.providers)}"
+                                for side in item.sides
+                            )
+                            + "."
+                            for item in evidence_catalog.provider_divergences
+                        ),
+                        "These are source assertions, possibly from sequential "
+                        "statements; the effective database state is not "
+                        "established.",
                     )
-                    + "."
-                    for item in evidence_catalog.provider_conflicts
                 ),
                 scope="review",
             )
@@ -255,7 +262,7 @@ def build_review_overview(
         ),
         provider_coverage=evidence_catalog.provider_coverage,
         unclaimed_changed_files=evidence_catalog.provider_plan.unclaimed_files,
-        provider_conflicts=evidence_catalog.provider_conflicts,
+        provider_divergences=evidence_catalog.provider_divergences,
     )
 
 

@@ -27,7 +27,7 @@ _MAX_BYTES_PER_FILE = 2_000_000
 
 # The op.* calls whose schema effect this provider can state. Only the body of a
 # module-level ``upgrade()`` is examined; ``downgrade()`` is outside the
-# declaration, so a downgrade cannot contradict or corroborate an upgrade fact.
+# declaration, so a downgrade cannot diverge from or agree with an upgrade fact.
 _CAPABILITIES = (
     "op.add_column",
     "op.alter_column.nullable",
@@ -149,7 +149,7 @@ def _create_table(body: _Body, statement: ast.stmt, call: ast.Call) -> None:
         return
     if any(keyword.arg == "schema" for keyword in call.keywords):
         # A schema-qualified table is a different subject than the bare name;
-        # asserting the bare name would risk false corroboration.
+        # asserting the bare name would risk false agreement.
         body.gap(statement, "unsupported_statement")
         return
     body.fact(statement, "op.create_table", table_subject(table), "exists", "true")
