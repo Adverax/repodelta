@@ -145,3 +145,66 @@ permitted loss; "only `upgrade()` is examined" for Alembic.
   conditionals, no schema-qualified names; each is an explicit gap.
 - `evaluations/` artifacts were checked for schema pins: none reference the
   bumped versions.
+
+### Plan delta 2 (review of PR #327, before production-boundary mutation)
+
+Invalidating evidence, from maintainer review and verified on `a2323b4`:
+
+- Ingestion validated an observation against the descriptor shipped in the
+  same `ProviderContribution`, not against the declaration used for planning.
+  `ProviderPlanEntry` kept only identity and paths, `run_providers` called
+  `descriptor()` a second time, and a contribution from a provider absent from
+  the plan was accepted with whatever capabilities it carried. The recorded
+  contract ("validated against the pre-run declaration") was not enforced.
+- `derive_evidence_conflicts` decided "conflict" from provider identity, an
+  orthogonal dependency: two statements from distinct files with different
+  values were a conflict when two providers read them and not when one did.
+  Neither case establishes a shared migration instant or effective database
+  state; the statements are the same either way. Agreement across files has
+  the symmetric overclaim for corroboration.
+- `Closes #308` contradicted `Parent completion: open`. The repository rule
+  requires the closing reference; the open state was a misclassification, since
+  every listed unresolved surface is either an Uncertainty recorded in #308
+  itself, unchanged from #297, or an explicit provider gap.
+
+Changed contract and owners:
+
+- Authority for "what a provider declared before it ran" moves into
+  `ProviderPlan.descriptors` (declared, domain-wide, owner `plan_providers`).
+  Ingestion rejects a contribution whose descriptor differs from the planned
+  one, a contribution from an unplanned provider, and a planned provider with
+  no contribution. `EvidenceCatalog` recomputes coverage capabilities and
+  identities against the persisted plan instead of trusting the coverage rows.
+- The cross-provider derived result is renamed and re-scoped to what the
+  observations establish: `EvidenceDivergence` (derived, domain-wide, owner
+  `derive_evidence_divergences`) records that different providers assert
+  different values for one (side, subject, attribute) in their sources. It
+  does not claim contradictory or effective database state. Grouping is
+  unchanged; the provider-identity dependency is now the definition of the
+  signal, not an accident of it. Agreement is described as agreeing assertions,
+  not proof of effective state. Presentation labels follow.
+- Rejected alternative: a same-source comparable scope. It needs a
+  statement-level identity across two parsers, has no production instance
+  (SQL and Alembic never claim the same file), and would leave the #308
+  end-to-end requirement without a real provider pair.
+
+Region unchanged. `evidence_catalog.v21` / `review_brief.v60` are unreleased in
+this PR and are not bumped again. Excluded on review guidance: requirement
+assessment of schema facts and wider Alembic support.
+
+Evidence for delta 2:
+
+- Counterexamples written before the fix (drifted declaration, unplanned
+  contribution, planned-but-silent idle provider, persisted coverage
+  capabilities widened, persisted plan dispatching an unclaimed path): all five
+  failed on `a2323b4` with "DID NOT RAISE", i.e. the gaps were real.
+- Mutation of the new guards (descriptor equality, unplanned, missing, claims
+  check, coverage-vs-plan check, plan recording its descriptors) and of the
+  divergence presentation (caveat removed, old label, provider-identity
+  requirement dropped): nine mutants, all killed.
+- Final tree: 685 passed (baseline 680 rerun independently on `a2323b4`); the
+  CI fixture review via the real CLI still renders.
+- What this does not show: whether "divergence" is the signal reviewers need.
+  It is shaped by the observations available now; separating proven
+  contradiction from divergence waits for a provider pair that reads the same
+  source.
