@@ -655,3 +655,24 @@ def test_without_providers_every_changed_file_is_unclaimed_not_silent() -> None:
 
     assert brief.overview.unclaimed_changed_files == ("migrations/001.sql",)
     assert brief.overview.provider_coverage == ()
+
+
+def test_coverage_limits_count_provider_rows_but_not_authoring_notices() -> None:
+    from repodelta.model.contracts import ReviewAttention
+    from repodelta.presentation.html import render_html
+
+    sql = _fixed("sql", _fact("sql"))
+    brief = DeterministicAnalyzer(evidence_providers=(sql,)).analyze(
+        AnalysisInput(packet=_packet())
+    )
+    notice = ReviewAttention(
+        id="authoring", label="Authoring", message="near-miss heading",
+        scope="review", provider="authoring_contract",
+    )
+    brief = replace(brief, overview=replace(brief.overview, attention=(notice,)))
+
+    html = render_html(brief)
+
+    # One provider row; the authoring notice renders in its own section.
+    assert "Coverage limits · 1</summary>" in html
+    assert "Evidence provider sql: observed" in html

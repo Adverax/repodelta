@@ -5,6 +5,7 @@ from typing import Literal
 
 from repodelta.model.contracts import (
     CandidateConvergence,
+    Diagnostic,
     DiagnosticPresentation,
     ProjectionCandidateSet,
     ProjectionDiagnostic,
@@ -22,6 +23,7 @@ from repodelta.providers.structural import StructuralGraphCollection
 
 _SOURCE_COVERAGE_CODES = {
     "github_linked_issue_not_found",
+    "github_linked_issues_ambiguous",
     "github_linked_issues_unavailable",
     "github_patch_unavailable",
     "github_file_limit_reached",
@@ -152,10 +154,25 @@ def build_review_overview(
     *,
     diagnostic_presentation: DiagnosticPresentation,
     structural_graph_disabled: bool,
+    authoring_contract_diagnostics: tuple[Diagnostic, ...] = (),
 ) -> ReviewOverview:
     """Normalize review-wide status once for every presentation adapter."""
 
     attention = list(diagnostic_presentation.attention)
+    attention.extend(
+        ReviewAttention(
+            id=_attention_id(
+                "authored_contract",
+                (item.code, item.message),
+            ),
+            label="Authored contract",
+            message=item.message,
+            sources=item.sources,
+            scope="review",
+            provider="authoring_contract",
+        )
+        for item in authoring_contract_diagnostics
+    )
     source_messages = tuple(
         item
         for item in packet.diagnostics
